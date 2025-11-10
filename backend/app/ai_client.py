@@ -1,104 +1,119 @@
+# backend/app/ai_client.py
+
+import os
+import base64
+import aiohttp
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
-import os, base64, requests, threading, datetime
 from dotenv import load_dotenv
-from bson import ObjectId
-from pymongo import MongoClient
+import asyncio
+import logging
 
 load_dotenv()
 
-router = APIRouter()
-jobs = {}  # armazenamento em memória temporário
+router = APIRouter(prefix="/api/ai", tags=["AI"])
 
-# Configurações
-MONGO_URI = os.getenv("MONGO_URI")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_TIMEOUT = int(os.getenv("OPENAI_TIMEOUT", "25"))
 
-# Conexão com banco (para persistência de fila)
-client = MongoClient(MONGO_URI)
-db = client["lraapp"]
-jobs_col = db.get_collection("ocr_jobs")
+if not OPENAI_API_KEY:
+    raise ValueError("❌ OPENAI_API_KEY não encontrado no ambiente!")
 
+# Configura logging
+logging.basicConfig(level=logging.INFO)
 
-def process_in_background(job_id: str, img_base64: str):
-    """Executa o OCR em segundo plano"""
-    try:
-        headers = {
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": "application/json"
-        }
+# Memória temporária de tarefas
+ocr_jobs = {}
 
-        # ⚙️ Payload atualizado com novos tipos "input_text" e "input_image"
-        payload = {
-            "model": "gpt-4o-mini",
-            "input": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": "Extraia todo o texto legível da imagem abaixo. Não traduza, apenas reconheça o conteúdo textual."
-                        },
-                        {
-                            "type": "input_image",
-                            "image_url": {"url": f"data:image/png;base64,{img_base64}"}
-                        }
-                    ]
-                }
-            ]
-        }
-
-        response = requests.post(
-            "https://api.openai.com/v1/responses",
-            headers=headers,
-            json=payload,
-            timeout=OPENAI_TIMEOUT
-        )
-
-        data = response.json()
-
-        # verifica se veio texto
-        if "output" in data and len(data["output"]) > 0:
-            text = data["output"][0].get("content", "")
-            result = {"status": "done", "text": text}
-        else:
-            result = {"status": "error", "error": data}
-
-    except Exception as e:
-        result = {"status": "error", "text": "", "error": str(e)}
-
-    # salva no banco e memória
-    jobs[job_id] = result
-    jobs_col.update_one({"_id": ObjectId(job_id)}, {"$set": result})
-
-
-@router.post("/api/ai/ocr")
-async def upload_image(file: UploadFile = File(...)):
-    """Recebe imagem e agenda OCR"""
+# ==========================================
+# 🔹 Rota principal - Recebe a imagem
+# ==========================================
+@router.post("/ocr")
+async def process_image(file: UploadFile = File(...)):
     try:
         contents = await file.read()
-        img_base64 = base64.b64encode(contents).decode("utf-8")
+        image_base64 = base64.b64encode(contents).decode("utf-8")
 
-        # Cria ID do job
-        job = {"created_at": datetime.datetime.utcnow(), "status": "queued"}
-        inserted = jobs_col.insert_one(job)
-        job_id = str(inserted.inserted_id)
+        job_id = str(hash(file.filename + str(len(contents))))
+        ocr_jobs[job_id] = {"status": "queued", "text": None}
 
-        # Inicia thread para processamento
-        thread = threading.Thread(target=process_in_background, args=(job_id, img_base64))
-        thread.start()
+        asyncio.create_task(call_openai_ocr(image_base64, job_id))
+        return {"status": "queued", "job_id": job_id}
 
-        return JSONResponse({"status": "queued", "job_id": job_id})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logging.exception("Erro no upload de imagem")
+        raise HTTPException(status_code=500, detail=f"Erro ao processar imagem: {str(e)}")
 
 
-@router.get("/api/ai/status/{job_id}")
-async def get_job_status(job_id: str):
-    """Verifica o status de um OCR"""
-    job = jobs_col.find_one({"_id": ObjectId(job_id)})
+# ==========================================
+# 🔹 Rota de status - Verifica resultado do OCR
+# ==========================================
+@router.get("/status/{job_id}")
+async def check_status(job_id: str):
+    job = ocr_jobs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job não encontrado")
-    job["_id"] = str(job["_id"])
     return job
+
+
+# ==========================================
+# 🔹 Função interna - Chama o OpenAI GPT-4o-mini
+# ==========================================
+async def call_openai_ocr(image_base64: str, job_id: str):
+    url = "https://api.openai.com/v1/responses"
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "model": "gpt-4o-mini",
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": (
+                            "Extraia do rótulo da imagem todos os dados legíveis sobre o remédio. "
+                            "Organize o texto sem interpretações, mantendo o que estiver visível."
+                        ),
+                    },
+                    {
+                        "type": "input_image",
+                        "image_data": image_base64,
+                    },
+                ],
+            }
+        ],
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, json=payload) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    logging.error(f"Erro da OpenAI: {error_text}")
+                    ocr_jobs[job_id] = {"status": "error", "text": "", "error": error_text}
+                    return
+
+                data = await response.json()
+                result_text = (
+                    data.get("output", [{}])[0]
+                    .get("content", [{}])[0]
+                    .get("text", "")
+                    .strip()
+                )
+
+                ocr_jobs[job_id] = {"status": "done", "text": result_text}
+
+    except Exception as e:
+        logging.exception("Erro na chamada OpenAI OCR")
+        ocr_jobs[job_id] = {"status": "error", "text": "", "error": str(e)}
+
+
+# ==========================================
+# 🔹 Health check interno
+# ==========================================
+@router.get("/ping")
+async def ping():
+    return JSONResponse({"message": "AI client ativo ✅"})
