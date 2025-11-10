@@ -8,22 +8,17 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // Simulação simples de login — pode ser integrada ao backend depois
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
 
     try {
-      // Aqui futuramente pode entrar a chamada para o backend:
-      // const response = await fetch(`${API_BASE_URL}/api/auth/login`, {...})
-      // se quiser usar login real.
-
+      // Login 100% local — sem backend
       if (username.trim() === "" || password.trim() === "") {
         alert("Por favor, preencha usuário e senha.");
         return;
       }
 
-      // Simulação de autenticação
       if (username === "admin" && password === "1234") {
         localStorage.setItem("loggedIn", "true");
         navigate("/home");
@@ -78,7 +73,7 @@ export default function Login() {
       </form>
 
       <p className="mt-6 text-sm text-gray-400">
-        Dica: use <b>admin / 1234</b> para testar 🚀
+        Use <b>admin / 1234</b> para testar 🚀
       </p>
     </div>
   );
