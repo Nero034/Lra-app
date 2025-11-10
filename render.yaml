@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: lra-app
+    env: python
+    rootDir: lra-app-complete/backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: MONGO_URI
+        value: mongodb+srv://lrauser:lra12345@clusterlra.jsgrtvh.mongodb.net/lraapp?retryWrites=true&w=majority
+      - key: OPENAI_API_KEY
+        sync: false
