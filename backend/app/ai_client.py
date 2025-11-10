@@ -1,6 +1,6 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
-import base64, os, requests, threading, datetime
+import os, base64, requests, threading, datetime
 from dotenv import load_dotenv
 from bson import ObjectId
 from pymongo import MongoClient
@@ -8,26 +8,28 @@ from pymongo import MongoClient
 load_dotenv()
 
 router = APIRouter()
-jobs = {}  # armazenamento em memória temporário (poderia ser Mongo também)
+jobs = {}  # armazenamento em memória temporário
 
 # Configurações
 MONGO_URI = os.getenv("MONGO_URI")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_TIMEOUT = int(os.getenv("OPENAI_TIMEOUT", "25"))
 
-# Conexão com o banco (opcional — para persistência)
+# Conexão com banco (para persistência de fila)
 client = MongoClient(MONGO_URI)
 db = client["lraapp"]
 jobs_col = db.get_collection("ocr_jobs")
+
 
 def process_in_background(job_id: str, img_base64: str):
     """Executa o OCR em segundo plano"""
     try:
         headers = {
             "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": "application/json",
+            "Content-Type": "application/json"
         }
 
+        # ⚙️ Payload atualizado com novos tipos "input_text" e "input_image"
         payload = {
             "model": "gpt-4o-mini",
             "input": [
@@ -35,84 +37,68 @@ def process_in_background(job_id: str, img_base64: str):
                     "role": "user",
                     "content": [
                         {
-                            "type": "text",
-                            "text": (
-                                "Extraia de forma estruturada todas as informações "
-                                "do medicamento contidas nesta imagem e organize em texto "
-                                "com os campos: Nome, Fórmula, Conteúdo, Laboratório, "
-                                "Validade e Preço. Retorne apenas o texto formatado."
-                            ),
+                            "type": "input_text",
+                            "text": "Extraia todo o texto legível da imagem abaixo. Não traduza, apenas reconheça o conteúdo textual."
                         },
                         {
-                            "type": "image_url",
-                            "image_url": f"data:image/jpeg;base64,{img_base64}",
-                        },
-                    ],
+                            "type": "input_image",
+                            "image_url": {"url": f"data:image/png;base64,{img_base64}"}
+                        }
+                    ]
                 }
-            ],
+            ]
         }
 
         response = requests.post(
             "https://api.openai.com/v1/responses",
             headers=headers,
             json=payload,
-            timeout=OPENAI_TIMEOUT,
+            timeout=OPENAI_TIMEOUT
         )
 
-        if response.status_code != 200:
-            jobs[job_id]["status"] = "error"
-            jobs[job_id]["error"] = response.text
-            return
-
         data = response.json()
-        text = (
-            data.get("output", [{}])[0]
-            .get("content", [{}])[0]
-            .get("text", "")
-        ).strip()
 
-        jobs[job_id]["status"] = "done"
-        jobs[job_id]["text"] = text
-
-        # salva no banco (opcional)
-        jobs_col.insert_one({
-            "_id": ObjectId(job_id),
-            "status": "done",
-            "text": text,
-            "created_at": datetime.datetime.utcnow()
-        })
+        # verifica se veio texto
+        if "output" in data and len(data["output"]) > 0:
+            text = data["output"][0].get("content", "")
+            result = {"status": "done", "text": text}
+        else:
+            result = {"status": "error", "error": data}
 
     except Exception as e:
-        jobs[job_id]["status"] = "error"
-        jobs[job_id]["error"] = str(e)
+        result = {"status": "error", "text": "", "error": str(e)}
+
+    # salva no banco e memória
+    jobs[job_id] = result
+    jobs_col.update_one({"_id": ObjectId(job_id)}, {"$set": result})
 
 
-@router.post("/ocr")
-async def ocr_via_ai(file: UploadFile = File(...)):
-    """Recebe imagem, envia para IA e devolve job_id"""
-    if not OPENAI_API_KEY:
-        raise HTTPException(status_code=500, detail="Falta OPENAI_API_KEY configurada")
+@router.post("/api/ai/ocr")
+async def upload_image(file: UploadFile = File(...)):
+    """Recebe imagem e agenda OCR"""
+    try:
+        contents = await file.read()
+        img_base64 = base64.b64encode(contents).decode("utf-8")
 
-    file_bytes = await file.read()
-    img_base64 = base64.b64encode(file_bytes).decode("utf-8")
-    job_id = str(ObjectId())
+        # Cria ID do job
+        job = {"created_at": datetime.datetime.utcnow(), "status": "queued"}
+        inserted = jobs_col.insert_one(job)
+        job_id = str(inserted.inserted_id)
 
-    jobs[job_id] = {"status": "queued", "text": "", "error": None}
+        # Inicia thread para processamento
+        thread = threading.Thread(target=process_in_background, args=(job_id, img_base64))
+        thread.start()
 
-    threading.Thread(target=process_in_background, args=(job_id, img_base64)).start()
+        return JSONResponse({"status": "queued", "job_id": job_id})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-    return {"status": "queued", "job_id": job_id}
 
-
-@router.get("/result/{job_id}")
-async def get_ocr_result(job_id: str):
-    """Retorna o resultado do OCR"""
-    job = jobs.get(job_id)
-
+@router.get("/api/ai/status/{job_id}")
+async def get_job_status(job_id: str):
+    """Verifica o status de um OCR"""
+    job = jobs_col.find_one({"_id": ObjectId(job_id)})
     if not job:
-        record = jobs_col.find_one({"_id": ObjectId(job_id)})
-        if not record:
-            raise HTTPException(status_code=404, detail="Job ID não encontrado")
-        return JSONResponse(content={"status": record["status"], "text": record.get("text")})
-
-    return JSONResponse(content=job)
+        raise HTTPException(status_code=404, detail="Job não encontrado")
+    job["_id"] = str(job["_id"])
+    return job
