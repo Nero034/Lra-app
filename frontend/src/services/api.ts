@@ -1,3 +1,7 @@
+export const API_BASE_URL = "https://lra-app-0uq6.onrender.com";
+
+
+
 // frontend/src/services/api.ts
 
 /**
