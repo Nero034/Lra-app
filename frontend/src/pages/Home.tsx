@@ -1,40 +1,52 @@
-import React, { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { api } from '../services/api'
+// frontend/src/pages/Home.tsx
+import React from "react";
+import { useNavigate } from "react-router-dom";
 
-export default function Home(){
-  const [lists, setLists] = useState<any[]>([])
-  const [nome, setNome] = useState('')
+export default function Home() {
+  const navigate = useNavigate();
 
-  async function load(){ setLists(await api.lists()) }
-  async function create(){
-    if (!nome.trim()) return
-    await api.createList(nome.trim()); setNome(''); load()
-  }
-  useEffect(()=>{ load() }, [])
+  const handleLogout = () => {
+    localStorage.removeItem("loggedIn");
+    navigate("/");
+  };
 
-  const fixedOrder = ["Estoque","Retiradas","Saídas"]
+  return (
+    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white">
+      <h1 className="text-4xl font-bold mb-6">🏠 LRA App - Painel Principal</h1>
 
-  return <div>
-    <h2>Listas</h2>
-    <div style={{marginBottom:12}}>
-      <input placeholder="Nome da nova lista" value={nome} onChange={e=>setNome((e.target as HTMLInputElement).value)} />
-      <button onClick={create}>Criar</button>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-80">
+        <button
+          onClick={() => navigate("/camera")}
+          className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg shadow w-full"
+        >
+          📷 Enviar Imagem (OCR)
+        </button>
+
+        <button
+          onClick={() => navigate("/list")}
+          className="bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-6 rounded-lg shadow w-full"
+        >
+          📋 Visualizar Lista
+        </button>
+
+        <button
+          onClick={() => navigate("/settings")}
+          className="bg-yellow-500 hover:bg-yellow-600 text-white font-semibold py-3 px-6 rounded-lg shadow w-full"
+        >
+          ⚙️ Configurações
+        </button>
+
+        <button
+          onClick={handleLogout}
+          className="bg-red-600 hover:bg-red-700 text-white font-semibold py-3 px-6 rounded-lg shadow w-full"
+        >
+          🚪 Sair
+        </button>
+      </div>
+
+      <footer className="mt-8 text-gray-400 text-sm">
+        <p>Desenvolvido por Luan e Jureminha 💚</p>
+      </footer>
     </div>
-    <div>
-      <h3>Fixas</h3>
-      <ul>
-        {fixedOrder.map(f=>{
-          const found = lists.find(l=>l.nome===f)
-          return <li key={f}><Link to={`/lista/${encodeURIComponent(f)}`}>{f} {found?.fixa ? <span className="badge">fixa</span> : null}</Link></li>
-        })}
-      </ul>
-      <h3>Outras</h3>
-      <ul>
-        {lists.filter(l=>!l.fixa).map(l=>(
-          <li key={l._id}><Link to={`/lista/${encodeURIComponent(l.nome)}`}>{l.nome}</Link></li>
-        ))}
-      </ul>
-    </div>
-  </div>
+  );
 }
