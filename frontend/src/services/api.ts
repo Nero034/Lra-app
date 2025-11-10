@@ -1,19 +1,93 @@
-import axios from 'axios'
-const API = axios.create({ baseURL: (import.meta as any).env.VITE_API_URL || 'http://localhost:8000' })
+// frontend/src/services/api.ts
 
-export function setAuthToken(token: string){
-  API.defaults.headers.common['Authorization'] = `Bearer ${token}`
+/**
+ * Serviço central de comunicação com o backend do LRA App.
+ * Este arquivo define a base da API e as funções auxiliares
+ * para chamadas HTTP ao backend hospedado no Render.
+ */
+
+export const API_BASE_URL = "https://lra-app-0uq6.onrender.com"; // URL do backend ativo no Render
+
+/**
+ * Função genérica para requisições HTTP.
+ * @param endpoint Caminho da rota (ex: /api/ai/ocr)
+ * @param options Configuração da requisição (método, body, headers, etc.)
+ */
+export async function apiFetch(endpoint: string, options: RequestInit = {}) {
+  const url = `${API_BASE_URL}${endpoint}`;
+
+  const defaultHeaders = {
+    "Accept": "application/json",
+  };
+
+  const mergedOptions: RequestInit = {
+    ...options,
+    headers: {
+      ...defaultHeaders,
+      ...(options.headers || {}),
+    },
+  };
+
+  try {
+    const response = await fetch(url, mergedOptions);
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      throw new Error(`Erro ${response.status}: ${errorData}`);
+    }
+
+    // Se for JSON, tenta converter
+    const contentType = response.headers.get("content-type");
+    if (contentType && contentType.includes("application/json")) {
+      return await response.json();
+    }
+
+    // Caso contrário, retorna texto bruto
+    return await response.text();
+
+  } catch (error: any) {
+    console.error(`❌ Erro ao chamar ${endpoint}:`, error.message || error);
+    throw error;
+  }
 }
 
-export const api = {
-  login: (username: string, password: string) => API.post('/login', {username, password}).then(r=>r.data),
-  lists: () => API.get('/lists').then(r=>r.data),
-  createList: (nome: string) => API.post('/lists', {nome}).then(r=>r.data),
-  itemsByLista: (lista: string) => API.get(`/items/${encodeURIComponent(lista)}`).then(r=>r.data),
-  processImage: (b64: string, lista='Estoque') => API.post('/process-image', {image_base64: b64, lista_origem: lista}).then(r=>r.data),
-  saveManual: (payload:any) => API.post('/save-manual-item', payload).then(r=>r.data),
-  moveRetirada: (item_id:string, quantidade?:number) => API.post('/move/retiradas', {item_id, quantidade}).then(r=>r.data),
-  moveSaida: (item_id:string, quantidade?:number) => API.post('/move/saidas', {item_id, quantidade}).then(r=>r.data),
-  getConfig: () => API.get('/config').then(r=>r.data),
-  setConfig: (payload:any) => API.post('/config', payload).then(r=>r.data),
+/**
+ * Função específica para enviar imagem à IA via OCR.
+ * Retorna o job_id para acompanhar o processamento.
+ * @param file Arquivo de imagem capturado ou selecionado
+ */
+export async function sendImageToOCR(file: File) {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  return apiFetch("/api/ai/ocr", {
+    method: "POST",
+    body: formData,
+  });
+}
+
+/**
+ * Função para verificar o status de um job OCR.
+ * Retorna o texto extraído assim que o processamento for concluído.
+ * @param jobId ID retornado pela rota /api/ai/ocr
+ */
+export async function getOCRStatus(jobId: string) {
+  return apiFetch(`/api/ai/status/${jobId}`, {
+    method: "GET",
+  });
+}
+
+/**
+ * Verifica se o backend está online.
+ * Pode ser usada na tela de login ou inicialização do app.
+ */
+export async function checkHealth() {
+  try {
+    const data = await apiFetch("/health");
+    console.log("✅ Backend online:", data);
+    return data;
+  } catch (error) {
+    console.error("⚠️ Falha ao verificar backend:", error);
+    return null;
+  }
 }
